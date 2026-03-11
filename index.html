@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Md2Epub - Chuyển đổi Markdown sang EPUB</title>
+    <title>Md2Epub - Chuyển đổi & Ghép EPUB</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- React & Babel for Browser execution -->
@@ -20,13 +20,23 @@
         .custom-scrollbar::-webkit-scrollbar { width: 6px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: #f1f5f9; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 20px; }
+        .tab-active { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4); }
+        .tab-inactive { background: #f1f5f9; color: #64748b; }
+        .tab-inactive:hover { background: #e2e8f0; color: #475569; }
+        .drag-over { border-color: #6366f1 !important; background: rgba(99, 102, 241, 0.05) !important; }
+        @keyframes pulse-glow { 0%, 100% { box-shadow: 0 0 5px rgba(99, 102, 241, 0.3); } 50% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.6); } }
+        .processing-glow { animation: pulse-glow 1.5s ease-in-out infinite; }
+        @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .slide-in { animation: slideIn 0.3s ease-out; }
+        .file-item { transition: all 0.2s ease; }
+        .file-item:hover { background: #e0e7ff; transform: translateX(4px); }
     </style>
 </head>
-<body class="bg-slate-50">
+<body class="bg-gradient-to-br from-slate-50 via-indigo-50/30 to-purple-50/20 min-h-screen">
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useRef, useCallback } = React;
 
         // --- Templates ---
         const createContainerXml = () => `<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`;
@@ -50,7 +60,21 @@
   <navMap>${navPoints}</navMap>
 </ncx>`;
 
-        function App() {
+        // --- Tab Button Component ---
+        function TabButton({ active, onClick, icon, label }) {
+            return (
+                <button
+                    onClick={onClick}
+                    className={`flex items-center gap-2 px-6 py-3 rounded-xl font-semibold transition-all duration-300 ${active ? 'tab-active' : 'tab-inactive'}`}
+                >
+                    <i data-lucide={icon} className="w-5 h-5"></i>
+                    {label}
+                </button>
+            );
+        }
+
+        // --- Md2Epub Tab ---
+        function Md2EpubTab() {
             const [files, setFiles] = useState([]);
             const [metadata, setMetadata] = useState({ title: "Truyện Mới", author: "Tác Giả" });
             const [isProcessing, setIsProcessing] = useState(false);
@@ -66,6 +90,8 @@
                 const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
                 setFiles(sorted);
             };
+
+            const clearFiles = () => setFiles([]);
 
             const generateEpub = async () => {
                 setIsProcessing(true);
@@ -103,64 +129,392 @@
 
                     const blob = await zip.generateAsync({ type: "blob" });
                     saveAs(blob, `${metadata.title || 'ebook'}.epub`);
-                    setLog("Hoàn tất!");
-                } catch (e) { setLog("Lỗi: " + e.message); }
+                    setLog("✅ Hoàn tất!");
+                } catch (e) { setLog("❌ Lỗi: " + e.message); }
                 setIsProcessing(false);
             };
 
             return (
-                <div className="max-w-3xl mx-auto my-10 p-6 bg-white shadow-2xl rounded-2xl">
-                    <header className="flex items-center gap-4 mb-8 text-indigo-700">
-                        <i data-lucide="book" className="w-10 h-10"></i>
-                        <h1 className="text-3xl font-extrabold">Md2Epub</h1>
-                    </header>
-
+                <div className="slide-in">
                     <div className="grid grid-cols-2 gap-4 mb-6">
-                        <input type="text" placeholder="Tên sách" className="p-3 border rounded-lg outline-indigo-500" value={metadata.title} onChange={e => setMetadata({...metadata, title: e.target.value})} />
-                        <input type="text" placeholder="Tác giả" className="p-3 border rounded-lg outline-indigo-500" value={metadata.author} onChange={e => setMetadata({...metadata, author: e.target.value})} />
+                        <input type="text" placeholder="Tên sách" className="p-3 border border-slate-200 rounded-xl outline-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all" value={metadata.title} onChange={e => setMetadata({...metadata, title: e.target.value})} />
+                        <input type="text" placeholder="Tác giả" className="p-3 border border-slate-200 rounded-xl outline-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all" value={metadata.author} onChange={e => setMetadata({...metadata, author: e.target.value})} />
                     </div>
 
-                    <div className="border-4 border-dashed p-10 text-center rounded-xl hover:bg-slate-50 cursor-pointer relative mb-6">
+                    <div className="border-4 border-dashed border-slate-300 p-10 text-center rounded-2xl hover:border-indigo-400 hover:bg-indigo-50/30 cursor-pointer relative mb-6 transition-all duration-300">
                         <input type="file" multiple accept=".md,.txt" onChange={handleFileSelect} className="absolute inset-0 opacity-0 cursor-pointer" />
                         <i data-lucide="upload-cloud" className="w-12 h-12 mx-auto text-slate-400 mb-2"></i>
-                        <p className="text-slate-600 font-medium">Nhấn để chọn hàng loạt file chương truyện</p>
+                        <p className="text-slate-600 font-medium">Nhấn để chọn hàng loạt file chương truyện (.md, .txt)</p>
                     </div>
 
                     {files.length > 0 && (
-                        <div className="mb-6 bg-slate-100 rounded-lg p-4">
+                        <div className="mb-6 bg-gradient-to-r from-slate-50 to-indigo-50/50 rounded-xl p-4 border border-slate-200">
                             <div className="flex justify-between items-center mb-2">
-                                <span className="font-bold">{files.length} file đã chọn</span>
-                                <button onClick={sortFiles} className="bg-white px-3 py-1 rounded shadow text-sm flex items-center gap-1 hover:bg-indigo-50">
-                                    <i data-lucide="sort-asc" className="w-4 h-4"></i> Sắp xếp tự nhiên
-                                </button>
+                                <span className="font-bold text-slate-700">{files.length} file đã chọn</span>
+                                <div className="flex gap-2">
+                                    <button onClick={sortFiles} className="bg-white px-3 py-1.5 rounded-lg shadow-sm text-sm flex items-center gap-1 hover:bg-indigo-50 border border-slate-200 transition-all">
+                                        <i data-lucide="arrow-up-narrow-wide" className="w-4 h-4"></i> Sắp xếp
+                                    </button>
+                                    <button onClick={clearFiles} className="bg-white px-3 py-1.5 rounded-lg shadow-sm text-sm flex items-center gap-1 hover:bg-red-50 text-red-500 border border-slate-200 transition-all">
+                                        <i data-lucide="trash-2" className="w-4 h-4"></i> Xóa
+                                    </button>
+                                </div>
                             </div>
                             <div className="max-h-40 overflow-y-auto custom-scrollbar text-xs text-slate-500">
-                                {files.map((f, i) => <div key={i} className="py-1 border-b border-slate-200">{f.name}</div>)}
+                                {files.map((f, i) => <div key={i} className="file-item py-1.5 px-2 border-b border-slate-200/50 rounded">{i+1}. {f.name}</div>)}
                             </div>
                         </div>
                     )}
 
                     {isProcessing ? (
-                        <div className="space-y-2">
+                        <div className="space-y-2 processing-glow rounded-xl p-4">
                             <div className="flex justify-between text-sm italic text-indigo-600"><span>{log}</span><span>{progress}%</span></div>
                             <div className="w-full bg-slate-200 h-3 rounded-full overflow-hidden">
-                                <div className="bg-indigo-600 h-full transition-all" style={{width: progress+'%'}}></div>
+                                <div className="bg-gradient-to-r from-indigo-500 to-purple-500 h-full transition-all duration-300 rounded-full" style={{width: progress+'%'}}></div>
                             </div>
                         </div>
                     ) : (
-                        <button onClick={generateEpub} disabled={files.length===0} className="w-full bg-indigo-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-indigo-700 disabled:bg-slate-300 shadow-lg">
-                            Bắt đầu chuyển đổi & Tải về
+                        <button onClick={generateEpub} disabled={files.length===0} className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-4 rounded-xl font-bold text-lg hover:from-indigo-700 hover:to-purple-700 disabled:from-slate-300 disabled:to-slate-300 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-[1.01]">
+                            🚀 Bắt đầu chuyển đổi & Tải về
                         </button>
                     )}
                 </div>
             );
         }
 
+        // --- Merge EPUB Tab ---
+        function MergeEpubTab() {
+            const [epubFiles, setEpubFiles] = useState([]);
+            const [mergeMetadata, setMergeMetadata] = useState({ title: "Sách Ghép", author: "Tác Giả" });
+            const [isProcessing, setIsProcessing] = useState(false);
+            const [progress, setProgress] = useState(0);
+            const [log, setLog] = useState("");
+            const [dragOver, setDragOver] = useState(false);
+            const dropRef = useRef(null);
+
+            const handleEpubSelect = (e) => {
+                const selected = Array.from(e.target.files).filter(f => f.name.endsWith('.epub'));
+                addAndSort(selected);
+            };
+
+            const addAndSort = (newFiles) => {
+                setEpubFiles(prev => {
+                    const combined = [...prev, ...newFiles];
+                    return combined.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+                });
+            };
+
+            const clearEpubFiles = () => setEpubFiles([]);
+
+            const removeFile = (index) => {
+                setEpubFiles(prev => prev.filter((_, i) => i !== index));
+            };
+
+            const handleDragOver = useCallback((e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setDragOver(true);
+            }, []);
+
+            const handleDragLeave = useCallback((e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setDragOver(false);
+            }, []);
+
+            const handleDrop = useCallback((e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setDragOver(false);
+                const droppedFiles = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.epub'));
+                if (droppedFiles.length > 0) {
+                    addAndSort(droppedFiles);
+                }
+            }, []);
+
+            // Extract chapters from a single EPUB file
+            const extractChapters = async (epubFile) => {
+                const zip = await JSZip.loadAsync(epubFile);
+                const chapters = [];
+
+                // Find the OPF file to get the reading order
+                let opfPath = "OEBPS/content.opf";
+                const containerXml = await zip.file("META-INF/container.xml")?.async("text");
+                if (containerXml) {
+                    const match = containerXml.match(/full-path="([^"]+\.opf)"/);
+                    if (match) opfPath = match[1];
+                }
+
+                const opfContent = await zip.file(opfPath)?.async("text");
+                if (!opfContent) {
+                    // Fallback: just grab all xhtml files
+                    const xhtmlFiles = Object.keys(zip.files)
+                        .filter(name => name.match(/\.(xhtml|html|htm)$/i) && !name.includes('toc'))
+                        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+                    for (const path of xhtmlFiles) {
+                        const content = await zip.file(path).async("text");
+                        const titleMatch = content.match(/<title>([^<]*)<\/title>/i);
+                        chapters.push({
+                            title: titleMatch ? titleMatch[1] : path.split('/').pop().replace(/\.\w+$/, ''),
+                            body: extractBody(content),
+                            css: null
+                        });
+                    }
+                    return chapters;
+                }
+
+                // Parse OPF to get manifest and spine
+                const parser = new DOMParser();
+                const opfDoc = parser.parseFromString(opfContent, "application/xml");
+                const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/') + 1) : '';
+
+                // Build manifest map: id -> href
+                const manifestMap = {};
+                const manifestItems = opfDoc.querySelectorAll("manifest > item");
+                manifestItems.forEach(item => {
+                    manifestMap[item.getAttribute("id")] = item.getAttribute("href");
+                });
+
+                // Get spine order
+                const spineItems = opfDoc.querySelectorAll("spine > itemref");
+                const orderedIds = Array.from(spineItems).map(item => item.getAttribute("idref"));
+
+                // Try to get CSS
+                let cssContent = null;
+                for (const [id, href] of Object.entries(manifestMap)) {
+                    if (href.endsWith('.css')) {
+                        const cssPath = opfDir + href;
+                        const cssFile = zip.file(cssPath);
+                        if (cssFile) {
+                            cssContent = await cssFile.async("text");
+                            break;
+                        }
+                    }
+                }
+
+                // Extract chapters in spine order
+                for (const id of orderedIds) {
+                    const href = manifestMap[id];
+                    if (!href) continue;
+                    const fullPath = opfDir + href;
+                    const file = zip.file(fullPath);
+                    if (!file) continue;
+
+                    const content = await file.async("text");
+                    if (!content.match(/\.(xhtml|html|htm)$/i) && !href.match(/\.(xhtml|html|htm)$/i)) continue;
+
+                    const titleMatch = content.match(/<title>([^<]*)<\/title>/i);
+                    let title = titleMatch ? titleMatch[1].trim() : href.split('/').pop().replace(/\.\w+$/, '');
+                    
+                    // Try to extract first <h1> or <h2> as title
+                    const hMatch = content.match(/<h[12][^>]*>([^<]*)<\/h[12]>/i);
+                    if (hMatch && hMatch[1].trim()) {
+                        title = hMatch[1].trim();
+                    }
+
+                    chapters.push({
+                        title: title,
+                        body: extractBody(content),
+                        css: cssContent
+                    });
+                }
+
+                return chapters;
+            };
+
+            // Extract just the <body> content from an XHTML string
+            const extractBody = (xhtml) => {
+                const bodyMatch = xhtml.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+                return bodyMatch ? bodyMatch[1] : xhtml;
+            };
+
+            const mergeEpubs = async () => {
+                if (epubFiles.length < 2) {
+                    setLog("⚠️ Cần ít nhất 2 file EPUB để ghép!");
+                    return;
+                }
+
+                setIsProcessing(true);
+                setProgress(0);
+                setLog("Đang bắt đầu ghép EPUB...");
+
+                try {
+                    const allChapters = [];
+
+                    // Extract chapters from all EPUBs in order
+                    for (let i = 0; i < epubFiles.length; i++) {
+                        setLog(`📖 Đang đọc: ${epubFiles[i].name}`);
+                        setProgress(Math.round(((i) / epubFiles.length) * 60));
+                        
+                        const chapters = await extractChapters(epubFiles[i]);
+                        allChapters.push(...chapters);
+                        
+                        await new Promise(r => setTimeout(r, 0));
+                    }
+
+                    setLog(`📝 Đã trích xuất ${allChapters.length} chương. Đang tạo EPUB mới...`);
+                    setProgress(70);
+
+                    // Build new EPUB
+                    const zip = new JSZip();
+                    zip.file("mimetype", "application/epub+zip", { compression: "STORE" });
+                    zip.folder("META-INF").file("container.xml", createContainerXml());
+                    const oebps = zip.folder("OEBPS");
+                    
+                    // Use CSS from first chapter that has CSS, or default
+                    const firstCss = allChapters.find(c => c.css)?.css || createCss();
+                    oebps.folder("Styles").file("style.css", firstCss);
+                    const textFolder = oebps.folder("Text");
+
+                    let manifest = ""; let spine = ""; let nav = "";
+
+                    for (let i = 0; i < allChapters.length; i++) {
+                        const chapter = allChapters[i];
+                        const fileName = `chap_${String(i+1).padStart(4, '0')}.xhtml`;
+
+                        textFolder.file(fileName, `<?xml version="1.0" encoding="utf-8"?><!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head><title>${chapter.title}</title><link rel="stylesheet" href="../Styles/style.css"/></head><body>${chapter.body}</body></html>`);
+
+                        manifest += `<item id="c${i}" href="Text/${fileName}" media-type="application/xhtml+xml"/>`;
+                        spine += `<itemref idref="c${i}"/>`;
+                        nav += `<navPoint id="n${i}" playOrder="${i+1}"><navLabel><text>${chapter.title}</text></navLabel><content src="Text/${fileName}"/></navPoint>`;
+
+                        if (i % 50 === 0) {
+                            setProgress(70 + Math.round((i / allChapters.length) * 25));
+                            await new Promise(r => setTimeout(r, 0));
+                        }
+                    }
+
+                    oebps.file("content.opf", createOpf(mergeMetadata, manifest, spine));
+                    oebps.file("toc.ncx", createNcx(mergeMetadata, nav));
+
+                    setLog("📦 Đang đóng gói EPUB...");
+                    setProgress(95);
+
+                    const blob = await zip.generateAsync({ type: "blob" });
+                    saveAs(blob, `${mergeMetadata.title || 'merged'}.epub`);
+                    
+                    setProgress(100);
+                    setLog(`✅ Hoàn tất! Đã ghép ${epubFiles.length} EPUB (${allChapters.length} chương) thành công.`);
+                } catch (e) {
+                    setLog("❌ Lỗi: " + e.message);
+                    console.error(e);
+                }
+                setIsProcessing(false);
+            };
+
+            return (
+                <div className="slide-in">
+                    <div className="grid grid-cols-2 gap-4 mb-6">
+                        <input type="text" placeholder="Tên sách ghép" className="p-3 border border-slate-200 rounded-xl outline-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all" value={mergeMetadata.title} onChange={e => setMergeMetadata({...mergeMetadata, title: e.target.value})} />
+                        <input type="text" placeholder="Tác giả" className="p-3 border border-slate-200 rounded-xl outline-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all" value={mergeMetadata.author} onChange={e => setMergeMetadata({...mergeMetadata, author: e.target.value})} />
+                    </div>
+
+                    <div
+                        ref={dropRef}
+                        onDragOver={handleDragOver}
+                        onDragLeave={handleDragLeave}
+                        onDrop={handleDrop}
+                        className={`border-4 border-dashed p-10 text-center rounded-2xl cursor-pointer relative mb-6 transition-all duration-300 ${dragOver ? 'drag-over border-indigo-400 bg-indigo-50/50' : 'border-slate-300 hover:border-purple-400 hover:bg-purple-50/30'}`}
+                    >
+                        <input type="file" multiple accept=".epub" onChange={handleEpubSelect} className="absolute inset-0 opacity-0 cursor-pointer" />
+                        <i data-lucide="combine" className="w-12 h-12 mx-auto text-purple-400 mb-2"></i>
+                        <p className="text-slate-600 font-medium">Kéo thả hoặc nhấn để chọn nhiều file EPUB</p>
+                        <p className="text-slate-400 text-sm mt-1">Tự động sắp xếp theo tên từ bé đến lớn</p>
+                    </div>
+
+                    {epubFiles.length > 0 && (
+                        <div className="mb-6 bg-gradient-to-r from-purple-50/50 to-indigo-50/50 rounded-xl p-4 border border-purple-200/50">
+                            <div className="flex justify-between items-center mb-3">
+                                <span className="font-bold text-slate-700 flex items-center gap-2">
+                                    <span className="bg-purple-100 text-purple-700 px-2.5 py-0.5 rounded-full text-sm font-semibold">{epubFiles.length}</span>
+                                    file EPUB đã chọn
+                                </span>
+                                <button onClick={clearEpubFiles} className="bg-white px-3 py-1.5 rounded-lg shadow-sm text-sm flex items-center gap-1 hover:bg-red-50 text-red-500 border border-slate-200 transition-all">
+                                    <i data-lucide="trash-2" className="w-4 h-4"></i> Xóa tất cả
+                                </button>
+                            </div>
+                            <div className="max-h-52 overflow-y-auto custom-scrollbar space-y-1">
+                                {epubFiles.map((f, i) => (
+                                    <div key={i} className="file-item flex items-center justify-between py-2 px-3 rounded-lg border-b border-purple-100/50 group">
+                                        <div className="flex items-center gap-3">
+                                            <span className="bg-indigo-100 text-indigo-600 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold">{i+1}</span>
+                                            <div>
+                                                <span className="text-sm text-slate-700 font-medium">{f.name}</span>
+                                                <span className="text-xs text-slate-400 ml-2">({(f.size / 1024).toFixed(1)} KB)</span>
+                                            </div>
+                                        </div>
+                                        <button onClick={() => removeFile(i)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all p-1 rounded hover:bg-red-50">
+                                            <i data-lucide="x" className="w-4 h-4"></i>
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="mt-3 pt-3 border-t border-purple-200/30 text-xs text-slate-500 flex items-center gap-1">
+                                <i data-lucide="info" className="w-3.5 h-3.5"></i>
+                                Thứ tự ghép: từ trên xuống dưới (đã sort theo tên file)
+                            </div>
+                        </div>
+                    )}
+
+                    {isProcessing ? (
+                        <div className="space-y-2 processing-glow rounded-xl p-4">
+                            <div className="flex justify-between text-sm italic text-purple-600"><span>{log}</span><span>{progress}%</span></div>
+                            <div className="w-full bg-slate-200 h-3 rounded-full overflow-hidden">
+                                <div className="bg-gradient-to-r from-purple-500 to-indigo-500 h-full transition-all duration-300 rounded-full" style={{width: progress+'%'}}></div>
+                            </div>
+                        </div>
+                    ) : (
+                        <button onClick={mergeEpubs} disabled={epubFiles.length < 2} className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-4 rounded-xl font-bold text-lg hover:from-purple-700 hover:to-indigo-700 disabled:from-slate-300 disabled:to-slate-300 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-[1.01]">
+                            🔗 Ghép {epubFiles.length > 0 ? `${epubFiles.length} EPUB` : 'EPUB'} & Tải về
+                        </button>
+                    )}
+
+                    {!isProcessing && log && (
+                        <div className={`mt-4 p-3 rounded-lg text-sm ${log.includes('✅') ? 'bg-green-50 text-green-700 border border-green-200' : log.includes('❌') ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-amber-50 text-amber-700 border border-amber-200'}`}>
+                            {log}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // --- Main App ---
+        function App() {
+            const [activeTab, setActiveTab] = useState("convert");
+
+            useEffect(() => {
+                setTimeout(() => lucide.createIcons(), 100);
+            });
+
+            return (
+                <div className="max-w-3xl mx-auto my-10 p-8 bg-white/80 backdrop-blur-sm shadow-2xl rounded-3xl border border-white/20">
+                    <header className="flex items-center gap-4 mb-8">
+                        <div className="bg-gradient-to-br from-indigo-500 to-purple-600 p-3 rounded-2xl shadow-lg">
+                            <i data-lucide="book-open" className="w-8 h-8 text-white"></i>
+                        </div>
+                        <div>
+                            <h1 className="text-3xl font-extrabold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">Md2Epub</h1>
+                            <p className="text-sm text-slate-400">Chuyển đổi & Ghép EPUB dễ dàng</p>
+                        </div>
+                    </header>
+
+                    <div className="flex gap-2 mb-8 bg-slate-100/80 p-1.5 rounded-2xl">
+                        <TabButton active={activeTab === "convert"} onClick={() => setActiveTab("convert")} icon="file-text" label="Md → EPUB" />
+                        <TabButton active={activeTab === "merge"} onClick={() => setActiveTab("merge")} icon="git-merge" label="Ghép EPUB" />
+                    </div>
+
+                    {activeTab === "convert" ? <Md2EpubTab /> : <MergeEpubTab />}
+
+                    <footer className="mt-8 pt-4 border-t border-slate-100 text-center text-xs text-slate-400">
+                        Md2Epub Tool — Xử lý hoàn toàn trên trình duyệt, không upload dữ liệu
+                    </footer>
+                </div>
+            );
+        }
+
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
-        
-        // Initialize Lucide icons after React renders
-        setTimeout(() => lucide.createIcons(), 500);
     </script>
 </body>
 </html>
