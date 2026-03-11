@@ -182,6 +182,25 @@
             );
         }
 
+        // --- MIME type helper ---
+        const getMimeType = (filename) => {
+            const ext = filename.split('.').pop().toLowerCase();
+            const mimeMap = {
+                'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+                'gif': 'image/gif', 'svg': 'image/svg+xml', 'webp': 'image/webp',
+                'css': 'text/css',
+                'ttf': 'font/ttf', 'otf': 'font/otf', 'woff': 'font/woff', 'woff2': 'font/woff2',
+                'xhtml': 'application/xhtml+xml', 'html': 'text/html', 'htm': 'text/html',
+                'ncx': 'application/x-dtbncx+xml',
+            };
+            return mimeMap[ext] || 'application/octet-stream';
+        };
+
+        const isImageExt = (name) => /\.(jpe?g|png|gif|svg|webp|bmp|tiff?)$/i.test(name);
+        const isFontExt = (name) => /\.(ttf|otf|woff2?)$/i.test(name);
+        const isCssExt = (name) => /\.css$/i.test(name);
+        const isXhtmlExt = (name) => /\.(xhtml|html|htm)$/i.test(name);
+
         // --- Merge EPUB Tab ---
         function MergeEpubTab() {
             const [epubFiles, setEpubFiles] = useState([]);
@@ -232,103 +251,183 @@
                 }
             }, []);
 
-            // Extract chapters from a single EPUB file
-            const extractChapters = async (epubFile) => {
+            // ============================================================
+            // Extract ALL data from a single EPUB: chapters, images, CSS, fonts
+            // ============================================================
+            const extractEpubData = async (epubFile, epubIndex) => {
                 const zip = await JSZip.loadAsync(epubFile);
-                const chapters = [];
+                const result = {
+                    chapters: [],    // [{title, fullXhtml, href}]
+                    images: [],      // [{originalRelPath, newName, data (Uint8Array), mime}]
+                    cssList: [],     // [{originalRelPath, newName, content (string)}]
+                    fonts: [],       // [{originalRelPath, newName, data (Uint8Array), mime}]
+                };
+                const prefix = `ep${epubIndex}_`;
 
-                // Find the OPF file to get the reading order
+                // 1. Find the OPF file path
                 let opfPath = "OEBPS/content.opf";
                 const containerXml = await zip.file("META-INF/container.xml")?.async("text");
                 if (containerXml) {
                     const match = containerXml.match(/full-path="([^"]+\.opf)"/);
                     if (match) opfPath = match[1];
                 }
-
-                const opfContent = await zip.file(opfPath)?.async("text");
-                if (!opfContent) {
-                    // Fallback: just grab all xhtml files
-                    const xhtmlFiles = Object.keys(zip.files)
-                        .filter(name => name.match(/\.(xhtml|html|htm)$/i) && !name.includes('toc'))
-                        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-
-                    for (const path of xhtmlFiles) {
-                        const content = await zip.file(path).async("text");
-                        const titleMatch = content.match(/<title>([^<]*)<\/title>/i);
-                        chapters.push({
-                            title: titleMatch ? titleMatch[1] : path.split('/').pop().replace(/\.\w+$/, ''),
-                            body: extractBody(content),
-                            css: null
-                        });
-                    }
-                    return chapters;
-                }
-
-                // Parse OPF to get manifest and spine
-                const parser = new DOMParser();
-                const opfDoc = parser.parseFromString(opfContent, "application/xml");
                 const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/') + 1) : '';
 
-                // Build manifest map: id -> href
+                // 2. Parse OPF
+                const opfContent = await zip.file(opfPath)?.async("text");
+                if (!opfContent) throw new Error(`Không tìm thấy OPF trong ${epubFile.name}`);
+
+                const parser = new DOMParser();
+                const opfDoc = parser.parseFromString(opfContent, "application/xml");
+
+                // 3. Build manifest map: id -> {href, mediaType}
                 const manifestMap = {};
-                const manifestItems = opfDoc.querySelectorAll("manifest > item");
-                manifestItems.forEach(item => {
-                    manifestMap[item.getAttribute("id")] = item.getAttribute("href");
+                opfDoc.querySelectorAll("manifest > item").forEach(item => {
+                    manifestMap[item.getAttribute("id")] = {
+                        href: item.getAttribute("href"),
+                        mediaType: item.getAttribute("media-type") || ""
+                    };
                 });
 
-                // Get spine order
-                const spineItems = opfDoc.querySelectorAll("spine > itemref");
-                const orderedIds = Array.from(spineItems).map(item => item.getAttribute("idref"));
+                // 4. Extract ALL images from the EPUB
+                // Map: original relative path (from OPF dir) -> new filename
+                const imagePathMap = {};  // "Images/foo.jpg" -> "ep0_foo.jpg"
+                const cssPathMap = {};
+                const fontPathMap = {};
 
-                // Try to get CSS
-                let cssContent = null;
-                for (const [id, href] of Object.entries(manifestMap)) {
-                    if (href.endsWith('.css')) {
-                        const cssPath = opfDir + href;
-                        const cssFile = zip.file(cssPath);
-                        if (cssFile) {
-                            cssContent = await cssFile.async("text");
-                            break;
+                for (const [id, info] of Object.entries(manifestMap)) {
+                    const href = info.href;
+                    const fullPath = opfDir + href;
+                    const baseName = href.split('/').pop();
+                    const newName = prefix + baseName;
+
+                    if (isImageExt(href) || info.mediaType.startsWith('image/')) {
+                        const file = zip.file(fullPath);
+                        if (file) {
+                            const data = await file.async("uint8array");
+                            result.images.push({
+                                originalRelPath: href,
+                                newName: newName,
+                                data: data,
+                                mime: info.mediaType || getMimeType(href)
+                            });
+                            imagePathMap[href] = newName;
+                            // Also map just the filename for simpler references
+                            imagePathMap[baseName] = newName;
+                        }
+                    } else if (isCssExt(href)) {
+                        const file = zip.file(fullPath);
+                        if (file) {
+                            let cssText = await file.async("text");
+                            result.cssList.push({
+                                originalRelPath: href,
+                                newName: newName,
+                                content: cssText
+                            });
+                            cssPathMap[href] = newName;
+                            cssPathMap[baseName] = newName;
+                        }
+                    } else if (isFontExt(href) || info.mediaType.startsWith('font/') || info.mediaType.includes('opentype')) {
+                        const file = zip.file(fullPath);
+                        if (file) {
+                            const data = await file.async("uint8array");
+                            result.fonts.push({
+                                originalRelPath: href,
+                                newName: newName,
+                                data: data,
+                                mime: info.mediaType || getMimeType(href)
+                            });
+                            fontPathMap[href] = newName;
+                            fontPathMap[baseName] = newName;
                         }
                     }
                 }
 
-                // Extract chapters in spine order
+                // 5. Fix image references in CSS (url(../Images/foo.jpg) -> url(../Images/ep0_foo.jpg))
+                for (const css of result.cssList) {
+                    css.content = css.content.replace(/url\(\s*['"]?([^'")]+)['"]?\s*\)/gi, (match, urlPath) => {
+                        const fileName = urlPath.split('/').pop();
+                        if (imagePathMap[fileName]) {
+                            const newUrl = urlPath.replace(fileName, imagePathMap[fileName]);
+                            return `url(${newUrl})`;
+                        }
+                        if (fontPathMap[fileName]) {
+                            const newUrl = urlPath.replace(fileName, fontPathMap[fileName]);
+                            return `url(${newUrl})`;
+                        }
+                        return match;
+                    });
+                }
+
+                // 6. Get spine order
+                const spineItems = opfDoc.querySelectorAll("spine > itemref");
+                const orderedIds = Array.from(spineItems).map(item => item.getAttribute("idref"));
+
+                // 7. Extract chapters in spine order, fix image/css references
                 for (const id of orderedIds) {
-                    const href = manifestMap[id];
-                    if (!href) continue;
+                    const info = manifestMap[id];
+                    if (!info) continue;
+                    const href = info.href;
+                    if (!isXhtmlExt(href) && !info.mediaType.includes('xhtml') && !info.mediaType.includes('html')) continue;
+
                     const fullPath = opfDir + href;
                     const file = zip.file(fullPath);
                     if (!file) continue;
 
-                    const content = await file.async("text");
-                    if (!content.match(/\.(xhtml|html|htm)$/i) && !href.match(/\.(xhtml|html|htm)$/i)) continue;
+                    let content = await file.async("text");
 
+                    // Fix image src references:  src="../Images/foo.jpg" -> src="../Images/ep0_foo.jpg"
+                    content = content.replace(/(src\s*=\s*['"])([^'"]+)(['"])/gi, (match, pre, srcPath, post) => {
+                        const fileName = srcPath.split('/').pop();
+                        if (imagePathMap[fileName]) {
+                            const newSrc = srcPath.replace(fileName, imagePathMap[fileName]);
+                            return pre + newSrc + post;
+                        }
+                        return match;
+                    });
+
+                    // Fix xlink:href for SVG images
+                    content = content.replace(/(xlink:href\s*=\s*['"])([^'"]+)(['"])/gi, (match, pre, srcPath, post) => {
+                        const fileName = srcPath.split('/').pop();
+                        if (imagePathMap[fileName]) {
+                            const newSrc = srcPath.replace(fileName, imagePathMap[fileName]);
+                            return pre + newSrc + post;
+                        }
+                        return match;
+                    });
+
+                    // Fix CSS href references: href="../Styles/stylesheet.css" -> href="../Styles/ep0_stylesheet.css"
+                    content = content.replace(/(href\s*=\s*['"])([^'"]*\.css)(['"])/gi, (match, pre, hrefPath, post) => {
+                        const fileName = hrefPath.split('/').pop();
+                        if (cssPathMap[fileName]) {
+                            const newHref = hrefPath.replace(fileName, cssPathMap[fileName]);
+                            return pre + newHref + post;
+                        }
+                        return match;
+                    });
+
+                    // Extract title
                     const titleMatch = content.match(/<title>([^<]*)<\/title>/i);
                     let title = titleMatch ? titleMatch[1].trim() : href.split('/').pop().replace(/\.\w+$/, '');
-                    
-                    // Try to extract first <h1> or <h2> as title
-                    const hMatch = content.match(/<h[12][^>]*>([^<]*)<\/h[12]>/i);
+                    // Prefer h1/h2 as title
+                    const hMatch = content.match(/<h[12][^>]*>([^<]+)<\/h[12]>/i);
                     if (hMatch && hMatch[1].trim()) {
                         title = hMatch[1].trim();
                     }
 
-                    chapters.push({
+                    result.chapters.push({
                         title: title,
-                        body: extractBody(content),
-                        css: cssContent
+                        fullXhtml: content,
+                        href: href
                     });
                 }
 
-                return chapters;
+                return result;
             };
 
-            // Extract just the <body> content from an XHTML string
-            const extractBody = (xhtml) => {
-                const bodyMatch = xhtml.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-                return bodyMatch ? bodyMatch[1] : xhtml;
-            };
-
+            // ============================================================
+            // Merge all EPUBs
+            // ============================================================
             const mergeEpubs = async () => {
                 if (epubFiles.length < 2) {
                     setLog("⚠️ Cần ít nhất 2 file EPUB để ghép!");
@@ -340,51 +439,161 @@
                 setLog("Đang bắt đầu ghép EPUB...");
 
                 try {
-                    const allChapters = [];
-
-                    // Extract chapters from all EPUBs in order
+                    // ---- Phase 1: Extract all data from all EPUBs ----
+                    const allData = []; // [{chapters, images, cssList, fonts}]
                     for (let i = 0; i < epubFiles.length; i++) {
-                        setLog(`📖 Đang đọc: ${epubFiles[i].name}`);
-                        setProgress(Math.round(((i) / epubFiles.length) * 60));
-                        
-                        const chapters = await extractChapters(epubFiles[i]);
-                        allChapters.push(...chapters);
-                        
+                        setLog(`📖 Đang đọc: ${epubFiles[i].name} (${i+1}/${epubFiles.length})`);
+                        setProgress(Math.round(((i) / epubFiles.length) * 50));
+
+                        const data = await extractEpubData(epubFiles[i], i);
+                        allData.push(data);
+
                         await new Promise(r => setTimeout(r, 0));
                     }
 
-                    setLog(`📝 Đã trích xuất ${allChapters.length} chương. Đang tạo EPUB mới...`);
-                    setProgress(70);
+                    const totalChapters = allData.reduce((s, d) => s + d.chapters.length, 0);
+                    const totalImages = allData.reduce((s, d) => s + d.images.length, 0);
+                    const totalCss = allData.reduce((s, d) => s + d.cssList.length, 0);
+                    const totalFonts = allData.reduce((s, d) => s + d.fonts.length, 0);
+                    setLog(`📝 Trích xuất: ${totalChapters} chương, ${totalImages} ảnh, ${totalCss} CSS, ${totalFonts} fonts`);
+                    setProgress(55);
 
-                    // Build new EPUB
+                    // ---- Phase 2: Build new EPUB ----
                     const zip = new JSZip();
                     zip.file("mimetype", "application/epub+zip", { compression: "STORE" });
                     zip.folder("META-INF").file("container.xml", createContainerXml());
                     const oebps = zip.folder("OEBPS");
-                    
-                    // Use CSS from first chapter that has CSS, or default
-                    const firstCss = allChapters.find(c => c.css)?.css || createCss();
-                    oebps.folder("Styles").file("style.css", firstCss);
                     const textFolder = oebps.folder("Text");
+                    const imagesFolder = oebps.folder("Images");
+                    const stylesFolder = oebps.folder("Styles");
+                    const fontsFolder = oebps.folder("Fonts");
 
-                    let manifest = ""; let spine = ""; let nav = "";
+                    let manifest = "";
+                    let spine = "";
+                    let nav = "";
+                    let chapterIndex = 0;
 
-                    for (let i = 0; i < allChapters.length; i++) {
-                        const chapter = allChapters[i];
-                        const fileName = `chap_${String(i+1).padStart(4, '0')}.xhtml`;
+                    // ---- Phase 3: Add all images ----
+                    setLog("🖼️ Đang thêm ảnh...");
+                    const addedImages = new Set();
+                    for (const data of allData) {
+                        for (const img of data.images) {
+                            if (addedImages.has(img.newName)) continue;
+                            addedImages.add(img.newName);
+                            imagesFolder.file(img.newName, img.data);
+                            manifest += `<item id="img_${img.newName.replace(/[^a-zA-Z0-9_]/g, '_')}" href="Images/${img.newName}" media-type="${img.mime}"/>`;
+                        }
+                    }
+                    setProgress(60);
 
-                        textFolder.file(fileName, `<?xml version="1.0" encoding="utf-8"?><!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head><title>${chapter.title}</title><link rel="stylesheet" href="../Styles/style.css"/></head><body>${chapter.body}</body></html>`);
-
-                        manifest += `<item id="c${i}" href="Text/${fileName}" media-type="application/xhtml+xml"/>`;
-                        spine += `<itemref idref="c${i}"/>`;
-                        nav += `<navPoint id="n${i}" playOrder="${i+1}"><navLabel><text>${chapter.title}</text></navLabel><content src="Text/${fileName}"/></navPoint>`;
-
-                        if (i % 50 === 0) {
-                            setProgress(70 + Math.round((i / allChapters.length) * 25));
-                            await new Promise(r => setTimeout(r, 0));
+                    // ---- Phase 4: Add all CSS files ----
+                    setLog("🎨 Đang thêm CSS...");
+                    const addedCss = new Set();
+                    for (const data of allData) {
+                        for (const css of data.cssList) {
+                            if (addedCss.has(css.newName)) continue;
+                            addedCss.add(css.newName);
+                            stylesFolder.file(css.newName, css.content);
+                            manifest += `<item id="css_${css.newName.replace(/[^a-zA-Z0-9_]/g, '_')}" href="Styles/${css.newName}" media-type="text/css"/>`;
                         }
                     }
 
+                    // ---- Phase 5: Add all fonts ----
+                    const addedFonts = new Set();
+                    for (const data of allData) {
+                        for (const font of data.fonts) {
+                            if (addedFonts.has(font.newName)) continue;
+                            addedFonts.add(font.newName);
+                            fontsFolder.file(font.newName, font.data);
+                            manifest += `<item id="font_${font.newName.replace(/[^a-zA-Z0-9_]/g, '_')}" href="Fonts/${font.newName}" media-type="${font.mime}"/>`;
+                        }
+                    }
+                    setProgress(65);
+
+                    // ---- Phase 6: Add all chapters with fixed paths ----
+                    setLog("📄 Đang xây dựng các chương...");
+                    for (let epIdx = 0; epIdx < allData.length; epIdx++) {
+                        const data = allData[epIdx];
+                        const prefix = `ep${epIdx}_`;
+
+                        for (let ci = 0; ci < data.chapters.length; ci++) {
+                            const chapter = data.chapters[ci];
+                            const chapFileName = `chap_${String(chapterIndex + 1).padStart(4, '0')}.xhtml`;
+                            let xhtml = chapter.fullXhtml;
+
+                            // Normalize image paths: any ../Images/ep0_X.jpg or Images/ep0_X.jpg -> ../Images/ep0_X.jpg
+                            // Also handle paths like ../../Images/ etc.
+                            xhtml = xhtml.replace(/(src\s*=\s*['"])([^'"]+)(['"])/gi, (match, pre, srcPath, post) => {
+                                const fileName = srcPath.split('/').pop();
+                                if (addedImages.has(fileName)) {
+                                    return pre + "../Images/" + fileName + post;
+                                }
+                                return match;
+                            });
+                            xhtml = xhtml.replace(/(xlink:href\s*=\s*['"])([^'"]+)(['"])/gi, (match, pre, srcPath, post) => {
+                                const fileName = srcPath.split('/').pop();
+                                if (addedImages.has(fileName)) {
+                                    return pre + "../Images/" + fileName + post;
+                                }
+                                return match;
+                            });
+
+                            // Normalize CSS paths -> ../Styles/ep0_stylesheet.css
+                            xhtml = xhtml.replace(/(href\s*=\s*['"])([^'"]*\.css)(['"])/gi, (match, pre, hrefPath, post) => {
+                                const fileName = hrefPath.split('/').pop();
+                                if (addedCss.has(fileName)) {
+                                    return pre + "../Styles/" + fileName + post;
+                                }
+                                return match;
+                            });
+
+                            // Normalize font paths in inline styles
+                            xhtml = xhtml.replace(/url\(\s*['"]?([^'")]+)['"]?\s*\)/gi, (match, urlPath) => {
+                                const fileName = urlPath.split('/').pop();
+                                if (addedFonts.has(fileName)) {
+                                    return `url(../Fonts/${fileName})`;
+                                }
+                                if (addedImages.has(fileName)) {
+                                    return `url(../Images/${fileName})`;
+                                }
+                                return match;
+                            });
+
+                            textFolder.file(chapFileName, xhtml);
+                            manifest += `<item id="c${chapterIndex}" href="Text/${chapFileName}" media-type="application/xhtml+xml"/>`;
+                            spine += `<itemref idref="c${chapterIndex}"/>`;
+                            nav += `<navPoint id="n${chapterIndex}" playOrder="${chapterIndex + 1}"><navLabel><text>${chapter.title}</text></navLabel><content src="Text/${chapFileName}"/></navPoint>`;
+
+                            chapterIndex++;
+                            if (chapterIndex % 30 === 0) {
+                                setProgress(65 + Math.round((chapterIndex / totalChapters) * 25));
+                                await new Promise(r => setTimeout(r, 0));
+                            }
+                        }
+                    }
+
+                    // ---- Phase 7: Fix CSS font paths ----
+                    for (const data of allData) {
+                        for (const css of data.cssList) {
+                            if (!addedCss.has(css.newName)) continue;
+                            let fixedCss = css.content;
+                            fixedCss = fixedCss.replace(/url\(\s*['"]?([^'")]+)['"]?\s*\)/gi, (match, urlPath) => {
+                                const fileName = urlPath.split('/').pop();
+                                if (addedFonts.has(fileName)) {
+                                    return `url(../Fonts/${fileName})`;
+                                }
+                                if (addedImages.has(fileName)) {
+                                    return `url(../Images/${fileName})`;
+                                }
+                                return match;
+                            });
+                            stylesFolder.file(css.newName, fixedCss);
+                        }
+                    }
+
+                    setProgress(92);
+
+                    // ---- Phase 8: Write OPF and NCX ----
                     oebps.file("content.opf", createOpf(mergeMetadata, manifest, spine));
                     oebps.file("toc.ncx", createNcx(mergeMetadata, nav));
 
@@ -393,9 +602,9 @@
 
                     const blob = await zip.generateAsync({ type: "blob" });
                     saveAs(blob, `${mergeMetadata.title || 'merged'}.epub`);
-                    
+
                     setProgress(100);
-                    setLog(`✅ Hoàn tất! Đã ghép ${epubFiles.length} EPUB (${allChapters.length} chương) thành công.`);
+                    setLog(`✅ Hoàn tất! Ghép ${epubFiles.length} EPUB → ${chapterIndex} chương, ${addedImages.size} ảnh, ${addedCss.size} CSS, ${addedFonts.size} fonts.`);
                 } catch (e) {
                     setLog("❌ Lỗi: " + e.message);
                     console.error(e);
