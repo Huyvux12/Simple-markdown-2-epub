@@ -213,20 +213,35 @@
 
             const handleEpubSelect = (e) => {
                 const selected = Array.from(e.target.files).filter(f => f.name.endsWith('.epub'));
-                addAndSort(selected);
-            };
-
-            const addAndSort = (newFiles) => {
-                setEpubFiles(prev => {
-                    const combined = [...prev, ...newFiles];
-                    return combined.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-                });
+                setEpubFiles(prev => [...prev, ...selected]);
             };
 
             const clearEpubFiles = () => setEpubFiles([]);
 
             const removeFile = (index) => {
                 setEpubFiles(prev => prev.filter((_, i) => i !== index));
+            };
+
+            const moveUp = (index) => {
+                if (index === 0) return;
+                setEpubFiles(prev => {
+                    const arr = [...prev];
+                    [arr[index - 1], arr[index]] = [arr[index], arr[index - 1]];
+                    return arr;
+                });
+            };
+
+            const moveDown = (index) => {
+                setEpubFiles(prev => {
+                    if (index >= prev.length - 1) return prev;
+                    const arr = [...prev];
+                    [arr[index], arr[index + 1]] = [arr[index + 1], arr[index]];
+                    return arr;
+                });
+            };
+
+            const autoSort = () => {
+                setEpubFiles(prev => [...prev].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })));
             };
 
             const handleDragOver = useCallback((e) => {
@@ -247,7 +262,7 @@
                 setDragOver(false);
                 const droppedFiles = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.epub'));
                 if (droppedFiles.length > 0) {
-                    addAndSort(droppedFiles);
+                    setEpubFiles(prev => [...prev, ...droppedFiles]);
                 }
             }, []);
 
@@ -273,21 +288,26 @@
                 }
                 const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/') + 1) : '';
 
-                // 2. Parse OPF
+                // 2. Parse OPF using regex (DOMParser fails with namespaced XML)
                 const opfContent = await zip.file(opfPath)?.async("text");
                 if (!opfContent) throw new Error(`Không tìm thấy OPF trong ${epubFile.name}`);
 
-                const parser = new DOMParser();
-                const opfDoc = parser.parseFromString(opfContent, "application/xml");
-
-                // 3. Build manifest map: id -> {href, mediaType}
+                // 3. Build manifest map using regex: id -> {href, mediaType}
                 const manifestMap = {};
-                opfDoc.querySelectorAll("manifest > item").forEach(item => {
-                    manifestMap[item.getAttribute("id")] = {
-                        href: item.getAttribute("href"),
-                        mediaType: item.getAttribute("media-type") || ""
-                    };
-                });
+                const itemRegex = /<item\s+([^>]*?)\/?\s*>/gi;
+                let itemMatch;
+                while ((itemMatch = itemRegex.exec(opfContent)) !== null) {
+                    const attrs = itemMatch[1];
+                    const idMatch = attrs.match(/id="([^"]+)"/);
+                    const hrefMatch = attrs.match(/href="([^"]+)"/);
+                    const mtMatch = attrs.match(/media-type="([^"]+)"/);
+                    if (idMatch && hrefMatch) {
+                        manifestMap[idMatch[1]] = {
+                            href: hrefMatch[1],
+                            mediaType: mtMatch ? mtMatch[1] : ""
+                        };
+                    }
+                }
 
                 // 4. Extract ALL images from the EPUB
                 // Map: original relative path (from OPF dir) -> new filename
@@ -359,9 +379,13 @@
                     });
                 }
 
-                // 6. Get spine order
-                const spineItems = opfDoc.querySelectorAll("spine > itemref");
-                const orderedIds = Array.from(spineItems).map(item => item.getAttribute("idref"));
+                // 6. Get spine order using regex
+                const orderedIds = [];
+                const spineRegex = /<itemref\s+[^>]*idref="([^"]+)"[^>]*\/?>/gi;
+                let spineMatch;
+                while ((spineMatch = spineRegex.exec(opfContent)) !== null) {
+                    orderedIds.push(spineMatch[1]);
+                }
 
                 // 7. Extract chapters in spine order, fix image/css references
                 for (const id of orderedIds) {
@@ -628,8 +652,8 @@
                     >
                         <input type="file" multiple accept=".epub" onChange={handleEpubSelect} className="absolute inset-0 opacity-0 cursor-pointer" />
                         <i data-lucide="combine" className="w-12 h-12 mx-auto text-purple-400 mb-2"></i>
-                        <p className="text-slate-600 font-medium">Kéo thả hoặc nhấn để chọn nhiều file EPUB</p>
-                        <p className="text-slate-400 text-sm mt-1">Tự động sắp xếp theo tên từ bé đến lớn</p>
+                        <p className="text-slate-600 font-medium">Kéo thả hoặc nhấn để chọn file EPUB</p>
+                        <p className="text-slate-400 text-sm mt-1">File sẽ được ghép theo thứ tự bạn sắp xếp</p>
                     </div>
 
                     {epubFiles.length > 0 && (
@@ -639,29 +663,47 @@
                                     <span className="bg-purple-100 text-purple-700 px-2.5 py-0.5 rounded-full text-sm font-semibold">{epubFiles.length}</span>
                                     file EPUB đã chọn
                                 </span>
-                                <button onClick={clearEpubFiles} className="bg-white px-3 py-1.5 rounded-lg shadow-sm text-sm flex items-center gap-1 hover:bg-red-50 text-red-500 border border-slate-200 transition-all">
-                                    <i data-lucide="trash-2" className="w-4 h-4"></i> Xóa tất cả
-                                </button>
+                                <div className="flex gap-2">
+                                    <button onClick={autoSort} className="bg-white px-3 py-1.5 rounded-lg shadow-sm text-sm flex items-center gap-1 hover:bg-indigo-50 text-indigo-600 border border-slate-200 transition-all" title="Sắp xếp tự động theo tên">
+                                        <i data-lucide="arrow-up-narrow-wide" className="w-4 h-4"></i> Sort A→Z
+                                    </button>
+                                    <button onClick={clearEpubFiles} className="bg-white px-3 py-1.5 rounded-lg shadow-sm text-sm flex items-center gap-1 hover:bg-red-50 text-red-500 border border-slate-200 transition-all">
+                                        <i data-lucide="trash-2" className="w-4 h-4"></i> Xóa
+                                    </button>
+                                </div>
                             </div>
-                            <div className="max-h-52 overflow-y-auto custom-scrollbar space-y-1">
+                            <div className="max-h-72 overflow-y-auto custom-scrollbar space-y-1">
                                 {epubFiles.map((f, i) => (
-                                    <div key={i} className="file-item flex items-center justify-between py-2 px-3 rounded-lg border-b border-purple-100/50 group">
-                                        <div className="flex items-center gap-3">
-                                            <span className="bg-indigo-100 text-indigo-600 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold">{i+1}</span>
-                                            <div>
-                                                <span className="text-sm text-slate-700 font-medium">{f.name}</span>
-                                                <span className="text-xs text-slate-400 ml-2">({(f.size / 1024).toFixed(1)} KB)</span>
+                                    <div key={i} className="file-item flex items-center justify-between py-2 px-3 rounded-lg border border-purple-100/30 bg-white/60 group">
+                                        <div className="flex items-center gap-3 min-w-0">
+                                            <span className="bg-gradient-to-br from-indigo-500 to-purple-500 text-white w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shadow-sm shrink-0">
+                                                {i+1}
+                                            </span>
+                                            <div className="min-w-0">
+                                                <div className="text-xs text-purple-500 font-semibold">Tệp {i+1}</div>
+                                                <span className="text-sm text-slate-700 font-medium truncate block">{f.name}</span>
+                                                <span className="text-xs text-slate-400">({(f.size / 1024 / 1024).toFixed(2)} MB)</span>
                                             </div>
                                         </div>
-                                        <button onClick={() => removeFile(i)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all p-1 rounded hover:bg-red-50">
-                                            <i data-lucide="x" className="w-4 h-4"></i>
-                                        </button>
+                                        <div className="flex items-center gap-1 shrink-0">
+                                            <button onClick={() => moveUp(i)} disabled={i === 0}
+                                                className="p-1.5 rounded-lg hover:bg-indigo-100 text-indigo-500 disabled:opacity-20 disabled:cursor-default transition-all" title="Di chuyển lên">
+                                                <i data-lucide="chevron-up" className="w-4 h-4"></i>
+                                            </button>
+                                            <button onClick={() => moveDown(i)} disabled={i === epubFiles.length - 1}
+                                                className="p-1.5 rounded-lg hover:bg-indigo-100 text-indigo-500 disabled:opacity-20 disabled:cursor-default transition-all" title="Di chuyển xuống">
+                                                <i data-lucide="chevron-down" className="w-4 h-4"></i>
+                                            </button>
+                                            <button onClick={() => removeFile(i)} className="p-1.5 rounded-lg hover:bg-red-100 text-red-400 hover:text-red-600 transition-all ml-1" title="Xóa file">
+                                                <i data-lucide="x" className="w-4 h-4"></i>
+                                            </button>
+                                        </div>
                                     </div>
                                 ))}
                             </div>
                             <div className="mt-3 pt-3 border-t border-purple-200/30 text-xs text-slate-500 flex items-center gap-1">
                                 <i data-lucide="info" className="w-3.5 h-3.5"></i>
-                                Thứ tự ghép: từ trên xuống dưới (đã sort theo tên file)
+                                Dùng nút ▲▼ để sắp xếp thủ công. Ghép từ Tệp 1 → Tệp {epubFiles.length}
                             </div>
                         </div>
                     )}
